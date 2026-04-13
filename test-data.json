@@ -1,0 +1,73 @@
+{
+  "_comment": "Sample email header payloads for testing the phishing detection workflow. Use these to verify the IF node routing before connecting live credentials.",
+
+  "test_cases": {
+    "high_risk_spoofed": {
+      "_comment": "Should trigger Slack alert — SPF fail, DKIM fail, suspicious sender",
+      "subject": "Urgent: Verify your account immediately",
+      "sender": "security@paypa1.com",
+      "return_path": "bounce@malicious-domain.ru",
+      "recipients": ["user@yourcompany.com"],
+      "headers": {
+        "spf": "fail",
+        "dkim": "fail",
+        "dmarc": "fail",
+        "x_originating_ip": "185.220.101.47",
+        "received_from": "malicious-domain.ru"
+      },
+      "expected_risk": "HIGH",
+      "expected_path": "HIGH/CRITICAL → Slack alert"
+    },
+
+    "critical_risk_executive_impersonation": {
+      "_comment": "Should trigger Slack alert — display name matches CEO, domain mismatch",
+      "subject": "Wire transfer required — confidential",
+      "sender": "ceo@yourcompany-secure.com",
+      "return_path": "ceo@yourcompany-secure.com",
+      "recipients": ["finance@yourcompany.com"],
+      "headers": {
+        "spf": "pass",
+        "dkim": "fail",
+        "dmarc": "fail",
+        "x_originating_ip": "91.108.4.0",
+        "received_from": "yourcompany-secure.com"
+      },
+      "expected_risk": "CRITICAL",
+      "expected_path": "HIGH/CRITICAL → Slack alert"
+    },
+
+    "low_risk_legitimate": {
+      "_comment": "Should be silently ignored — all headers pass, known sender",
+      "subject": "Q2 report attached",
+      "sender": "colleague@yourcompany.com",
+      "return_path": "colleague@yourcompany.com",
+      "recipients": ["user@yourcompany.com"],
+      "headers": {
+        "spf": "pass",
+        "dkim": "pass",
+        "dmarc": "pass",
+        "x_originating_ip": "40.92.0.1",
+        "received_from": "outlook.com"
+      },
+      "expected_risk": "LOW",
+      "expected_path": "LOW/MEDIUM → No Action Required (silent)"
+    },
+
+    "medium_risk_newsletter": {
+      "_comment": "Should be silently ignored — minor signals, not actionable",
+      "subject": "Your weekly digest",
+      "sender": "newsletter@marketingplatform.com",
+      "return_path": "bounce@em.marketingplatform.com",
+      "recipients": ["user@yourcompany.com"],
+      "headers": {
+        "spf": "pass",
+        "dkim": "pass",
+        "dmarc": "pass",
+        "x_originating_ip": "167.89.0.0",
+        "received_from": "sendgrid.net"
+      },
+      "expected_risk": "MEDIUM",
+      "expected_path": "LOW/MEDIUM → No Action Required (silent)"
+    }
+  }
+}
