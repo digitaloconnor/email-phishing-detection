@@ -1,0 +1,241 @@
+{
+  "name": "Detect phishing emails from Outlook and alert via Slack",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1be37bb-9d60-4f33-9c55-e235595941e8",
+      "name": "Monitor Mailbox",
+      "type": "n8n-nodes-base.microsoftOutlookTrigger",
+      "typeVersion": 1.1,
+      "position": [-1456, 96],
+      "notes": "For all new emails. Requires Microsoft Outlook OAuth2 credentials with Mail.Read permission."
+    },
+    {
+      "parameters": {
+        "url": "={{'https://graph.microsoft.com/v1.0/me/messages/' + $json.id + '?$select=internetMessageHeaders,from,replyTo,subject,body,bodyPreview,importance,hasAttachments'}}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "microsoftGraphApi",
+        "options": {}
+      },
+      "id": "7c7abe42-d19b-402d-99ec-b7c14cf20bfb",
+      "name": "Retrieve Email Headers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [-1216, 96],
+      "notes": "Uses Microsoft Graph to fetch full headers + key fields for the email that triggered the workflow. Attach OAuth2 credentials for Microsoft Graph with Mail.Read scope."
+    },
+    {
+      "parameters": {},
+      "id": "861e6d8a-a550-4bda-b86f-85b2be4bf19b",
+      "name": "Format Headers",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [-976, 96],
+      "notes": "Organizes raw headers, extracts SPF/DKIM/DMARC/authentication results, and produces a safe, truncated text body."
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "47dc3783-bad7-4a55-a89f-63b778bd0979",
+      "name": "Set Email Variables",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-768, 96],
+      "notes": "Collects the key fields into a clean object for the LLM prompt + downstream logic."
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "prompt": {
+          "messages": [
+            {
+              "role": "system",
+              "content": "You are a security analyst specialized in phishing detection. Be decisive, conservative, and explain why."
+            },
+            {
+              "content": "=`Analyze the following Outlook email for phishing risk and output a single line that begins with:\nLABEL: SAFE | SUSPICIOUS | CRITICAL  (choose one).\nKeep the rest concise and point to the main indicators.\n\nFrom: ${$json.fromName} <${$json.fromAddress}>\nReply-To: ${$json.replyToAddress}\nSubject: ${$json.subject}\nImportance: ${$json.importance} | Attachments: ${$json.hasAttachments}\nAuth Results: SPF ${$json.auth.spf || 'unknown'}, DKIM ${$json.auth.dkim || 'unknown'}, DMARC ${$json.auth.dmarc || 'unknown'}\n\nBody Preview:\n${$json.bodyPreview}\n\nBody (truncated):\n${$json.safeText}\n\nSuspicious headers to consider (truncated JSON):\n${JSON.stringify($json.headers).slice(0, 3000)}\n\nRules:\n- If financial urgency, credential harvest, spoofed display names, mismatched reply-to domains, or failed SPF/DKIM/DMARC are present, lean CRITICAL.\n- Otherwise if anything looks off, choose SUSPICIOUS.\n- Otherwise SAFE.\n- Respond EXACTLY one line. Start with: LABEL: <value> \u2014 then a 1\u20132 sentence rationale.`"
+            }
+          ]
+        },
+        "options": {},
+        "requestOptions": {}
+      },
+      "id": "7fc5cece-a1ab-4150-8962-a3a2f567b962",
+      "name": "ChatGPT Phishing Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.1,
+      "position": [-496, 96],
+      "notes": "Prompts OpenAI to classify the email. Output includes the keyword the IF node will search for."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.data.choices[0].message.content || $json.choices[0].message.content || $json.text || ''}}",
+              "operation": "contains",
+              "value2": "CRITICAL"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9ef482c1-f0e6-4de6-b045-07b7d126d111",
+      "name": "Do I need to worry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-240, 96],
+      "notes": "Checks if the LLM output contains the keyword 'CRITICAL'. True branch triggers the Slack alert."
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{$env.SLACK_ALERT_CHANNEL || 'phish-alerts'}}",
+          "mode": "name"
+        },
+        "text": "=`\ud83d\udea8 *PHISHING ALERT* \u2014 *${$json.subject}*\n*From:* ${$json.fromName} <${$json.fromAddress}>\n*Reply-To:* ${$json.replyToAddress || '\u2014'}\n*Importance:* ${$json.importance} | *Attachments:* ${$json.hasAttachments}\n*Auth:* ${$json.auth.spf || 'SPF ?'}, ${$json.auth.dkim || 'DKIM ?'}, ${$json.auth.dmarc || 'DMARC ?'}\n*Model verdict:* ${$json.data?.choices?.[0]?.message?.content || $json.choices?.[0]?.message?.content || $json.text}`",
+        "otherOptions": {}
+      },
+      "id": "f29fc4b5-2625-4651-8ff3-4f1ee62a6ffc",
+      "name": "Alert !!",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [0, 0],
+      "webhookId": "a20f7a04-a1ff-4c44-9ec8-99cc7a90f6dd",
+      "notes": "Posts a critical phishing alert to Slack. Set SLACK_ALERT_CHANNEL env var or hardcode the channel name in this node."
+    },
+    {
+      "parameters": {
+        "content": "## Detect phishing emails from Outlook and alert via Slack\n\n**Who's it for:** Security teams and IT admins who want real-time, AI-powered phishing detection on a Microsoft 365 mailbox.\n\n**How it works:**\n1. Monitors Outlook for every new incoming email\n2. Fetches full message headers via Microsoft Graph API\n3. Parses SPF / DKIM / DMARC authentication results\n4. Sends the email context to OpenAI for classification (SAFE / SUSPICIOUS / CRITICAL)\n5. Posts a Slack alert only when a CRITICAL verdict is returned\n\n**Requirements:**\n- Microsoft Outlook OAuth2 credential (Mail.Read)\n- Microsoft Graph API OAuth2 credential (Mail.Read)\n- OpenAI API credential\n- Slack OAuth2 credential\n\n**How to set up:**\n- Attach all four credentials to their respective nodes\n- Set the `SLACK_ALERT_CHANNEL` environment variable to your alert channel name (e.g. `phish-alerts`), or edit the Slack node directly\n- Activate the workflow",
+        "height": 420,
+        "width": 460,
+        "color": 3
+      },
+      "id": "aa000001-0000-4000-8000-000000000001",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1940, -100]
+    },
+    {
+      "parameters": {
+        "content": "## 1. Data Retrieval\n\nOutlook trigger fires on every new email. Microsoft Graph fetches the full message with internet headers. Format Headers parses SPF / DKIM / DMARC results and sanitizes the body for safe LLM input.",
+        "height": 180,
+        "width": 740,
+        "color": 7
+      },
+      "id": "aa000002-0000-4000-8000-000000000002",
+      "name": "Step 1 - Data Retrieval",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1480, -140]
+    },
+    {
+      "parameters": {
+        "content": "## 2. AI Analysis\n\nOpenAI classifies the email as SAFE, SUSPICIOUS, or CRITICAL based on headers, authentication results, body content, and known phishing patterns. One-line verdict with rationale.",
+        "height": 180,
+        "width": 420,
+        "color": 7
+      },
+      "id": "aa000003-0000-4000-8000-000000000003",
+      "name": "Step 2 - AI Analysis",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-820, -140]
+    },
+    {
+      "parameters": {
+        "content": "## 3. Alerting\n\nOnly CRITICAL emails trigger a Slack alert. SAFE and SUSPICIOUS emails are silently dropped. Configure `SLACK_ALERT_CHANNEL` in n8n environment variables.",
+        "height": 180,
+        "width": 400,
+        "color": 7
+      },
+      "id": "aa000004-0000-4000-8000-000000000004",
+      "name": "Step 3 - Alerting",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-360, -140]
+    }
+  ],
+  "connections": {
+    "Monitor Mailbox": {
+      "main": [
+        [
+          {
+            "node": "Retrieve Email Headers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve Email Headers": {
+      "main": [
+        [
+          {
+            "node": "Format Headers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Headers": {
+      "main": [
+        [
+          {
+            "node": "Set Email Variables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Email Variables": {
+      "main": [
+        [
+          {
+            "node": "ChatGPT Phishing Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ChatGPT Phishing Analysis": {
+      "main": [
+        [
+          {
+            "node": "Do I need to worry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Do I need to worry?": {
+      "main": [
+        [
+          {
+            "node": "Alert !!",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": {},
+  "versionId": "e6220efe-678c-454c-90ad-3a0f1b39abbb",
+  "tags": []
+}
