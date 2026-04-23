@@ -1,132 +1,217 @@
-# Email Phishing Detection
+# 🛡️ Email Phishing Detection
 
-**Version:** 1.0  
-**Status:** Production  
-**Category:** SecOps  
-**Last Updated:** 2026-03-26
+> **Real-time phishing analysis for Microsoft Outlook — GPT-4 header analysis with HIGH/CRITICAL-only Slack alerting**
 
-> **Impact:** Automated phishing triage on every inbound email. GPT-4 handles the complexity of SPF/DKIM/DMARC analysis. Alerts only on HIGH and CRITICAL risk — silence on everything else. False positive rate reduced to zero against KnowBe4 test suite.
-
----
-
-## What It Does
-
-Monitors incoming Microsoft Outlook emails in real time, extracts and analyses email headers using GPT-4, and sends a Slack security alert only if the email is rated **HIGH** or **CRITICAL** risk. Low and medium risk emails are silently ignored.
-
-The design principle: alert fatigue is a real cost. A workflow that alerts on everything trains humans to ignore alerts. This one doesn't.
+[![Status](https://img.shields.io/badge/Status-Active-green)]()
+[![Category](https://img.shields.io/badge/Category-SecOps-red)]()
+[![n8n](https://img.shields.io/badge/n8n-v1.121.3-orange)]()
+[![License](https://img.shields.io/badge/License-MIT-lightgrey)]()
 
 ---
 
-## Workflow Diagram
+## 📋 Table of Contents
+- [Overview](#-overview)
+- [Workflow Architecture](#-workflow-architecture)
+- [Risk Classification](#-risk-classification)
+- [Node Table](#-node-table)
+- [Credentials Required](#-credentials-required)
+- [Quick Start](#-quick-start)
+- [Customisation](#-customisation)
+- [Error Handling](#-error-handling)
+- [Technologies Used](#️-technologies-used)
+- [Known Limitations](#-known-limitations)
+- [Contact](#-contact)
+
+---
+
+## 🎯 Overview
+
+Polls Microsoft Outlook every minute for new emails. For each email, retrieves the full message headers via the **Microsoft Graph API**, extracts SPF, DKIM, DMARC results, IP addresses, and Return-Path, and passes this metadata to **GPT-4** for phishing risk assessment. Only **HIGH** and **CRITICAL** risk emails trigger a Slack alert. LOW and MEDIUM are silently ignored.
+
+### Why This Matters
+- **Header analysis is complex** — SPF, DKIM, DMARC, spoofing indicators, IP reputation. Delegating this to GPT-4 replaces what would otherwise be a multi-step rules engine with a single intelligent assessment.
+- **Alert fatigue is real** — learned from experience. Alerting on MEDIUM risk creates noise that causes teams to ignore the alerts that actually matter. HIGH/CRITICAL only.
+- **Metadata only** — email bodies are never sent to OpenAI. Only headers, subject, sender, and recipients. Privacy-by-design.
+- **Tested to zero false positives** — validated against KnowBe4 phishing simulation emails before production activation.
+
+### Key Features
+- ✅ Minute-level polling of Microsoft Outlook inbox
+- ✅ Full header retrieval via Microsoft Graph API
+- ✅ GPT-4 four-tier risk classification (LOW / MEDIUM / HIGH / CRITICAL)
+- ✅ HIGH and CRITICAL only → Slack alert
+- ✅ Email body never sent externally
+
+---
+
+## 🏗️ Workflow Architecture
 
 ```
-Microsoft Outlook Trigger
-        │
-        ▼
+Microsoft Outlook Trigger (polls every 1 min)
+              │
+              ▼
 Retrieve Email Headers (Microsoft Graph API)
-        │
-        ▼
-Format Headers (SPF / DKIM / DMARC / IPs)
-        │
-        ▼
-Set Email Variables (subject, sender, recipients, headers)
-        │
-        ▼
+              │
+              ▼
+Format Headers
+(extracts SPF / DKIM / DMARC / IPs / Return-Path)
+              │
+              ▼
+Set Email Variables
+(subject, sender, recipients, formatted headers)
+              │
+              ▼
 Analyse Email with GPT-4
-        │
-        ▼
-High Risk? (IF node)
-   ├── TRUE  (HIGH / CRITICAL) → Send Slack Security Alert
-   └── FALSE (LOW / MEDIUM)   → No Action Required
+(returns: LOW / MEDIUM / HIGH / CRITICAL + reasoning)
+              │
+              ▼
+          High Risk?
+              │
+     YES      │      NO
+(HIGH/CRIT)  │   (LOW/MED)
+              │
+     ▼                ▼
+Send Slack         No Action
+Security Alert     Required
 ```
 
 ---
 
-## Node Reference
+## 🚨 Risk Classification
+
+| Rating | Action | Description |
+|--------|--------|-------------|
+| ✅ LOW | Silent — no alert | Passes authentication, no spoofing indicators |
+| 🟡 MEDIUM | Silent — no alert | Minor anomalies, not actionable |
+| 🔴 HIGH | Slack alert sent | Failed auth headers or clear spoofing indicators |
+| 🚨 CRITICAL | Slack alert sent | Active phishing attempt, impersonation, or malicious indicators |
+
+> **Design principle**: LOW and MEDIUM are the expected baseline. Alerting on them creates noise that causes real threats to be missed. Only escalate what requires human action.
+
+---
+
+## 📊 Node Table
 
 | # | Node | Type | Purpose |
 |---|------|------|---------|
 | 1 | Microsoft Outlook Trigger | Outlook | Polls every minute for unread emails |
 | 2 | Retrieve Email Headers | HTTP Request | Calls Microsoft Graph API for full headers |
 | 3 | Format Headers | Code | Extracts SPF, DKIM, DMARC, IPs, Return-Path |
-| 4 | Set Email Variables | Set | Maps subject, sender, recipients, headers for prompt |
-| 5 | Analyse Email with GPT-4 | OpenAI | Assesses phishing risk — returns LOW/MEDIUM/HIGH/CRITICAL |
-| 6 | High Risk? | IF | Filters — only passes HIGH or CRITICAL downstream |
+| 4 | Set Email Variables | Set | Maps subject, sender, recipients, headers for GPT-4 prompt |
+| 5 | Analyse Email with GPT-4 | OpenAI | Returns LOW / MEDIUM / HIGH / CRITICAL risk verdict |
+| 6 | High Risk? | If | Passes only HIGH or CRITICAL to Slack |
 | 7 | Send Slack Security Alert | Slack | Posts alert to security channel |
-| 8 | No Action Required | No-Op | Silent end for low-risk emails |
-
-14 nodes total including sticky note documentation.
+| 8 | No Action Required | No-Op | Silent end for LOW/MEDIUM emails |
 
 ---
 
-## Risk Levels
+## 🔑 Credentials Required
 
-| Rating | Action | Rationale |
-|--------|--------|-----------|
-| 🟢 LOW | Silent — no alert | Not actionable |
-| 🟡 MEDIUM | Silent — no alert | Not immediately actionable |
-| 🔴 HIGH | Slack alert sent | Requires human review |
-| 🚨 CRITICAL | Slack alert sent | Requires immediate human action |
-
-LOW and MEDIUM are deliberately ignored. Alerting on every suspicious signal creates noise that causes humans to ignore the real ones.
+| Credential | Type | Used By |
+|------------|------|---------|
+| Microsoft Outlook OAuth2 | n8n Microsoft OAuth2 | Outlook Trigger + Graph API header retrieval |
+| OpenAI API Key | n8n OpenAI credential | Analyse Email with GPT-4 |
+| Slack OAuth2 | n8n Slack credential | Send Slack Security Alert |
 
 ---
 
-## What GPT-4 Analyses
+## 🚀 Quick Start
 
-Header analysis is complex. SPF, DKIM, and DMARC validation, IP reputation, Return-Path mismatches, and spoofing indicators are delegated to GPT-4 — which outputs a plain English risk verdict. No regex. No brittle rule sets.
+### Prerequisites
+- n8n instance (self-hosted or cloud)
+- Microsoft 365 account with Outlook access
+- OpenAI API key (GPT-4 access required)
+- Slack workspace with bot permissions
 
-The prompt is the core of this workflow. Review and tune it periodically as phishing tactics evolve.
+### Setup Steps
+
+**1. Import the workflow**
+```bash
+n8n import:workflow --input=email-phishing-detection.json
+```
+
+**2. Configure credentials**
+
+In n8n → Credentials, create:
+- **Microsoft Outlook OAuth2** — requires Azure app registration with `Mail.Read` and `Mail.ReadWrite` permissions + Graph API access
+- **OpenAI** — API key with GPT-4 access
+- **Slack OAuth2** — bot token with `chat:write` scope
+
+**3. Set your Slack channel**
+
+In `Send Slack Security Alert`, update `channelId` to your security alerts channel.
+
+**4. Validate against test emails**
+
+Before activating in production, send known phishing test emails (e.g. KnowBe4 simulations) and verify the classification is correct. Tune the GPT-4 system prompt to match your organisation's risk tolerance.
+
+**5. Activate**
+
+Enable the workflow. It begins polling Outlook every minute immediately.
 
 ---
 
-## Credentials Required
-
-| Credential | Node(s) | Purpose |
-|------------|---------|---------|
-| Microsoft Outlook OAuth2 | Outlook Trigger, Retrieve Email Headers | Access mailbox and full headers via Graph API |
-| OpenAI API Key | Analyse Email with GPT-4 | GPT-4 phishing analysis |
-| Slack OAuth | Send Slack Security Alert | Post to security channel |
-
-See `.env.example` for required environment variable names.
-
----
-
-## Setup
-
-1. **Import** `Email_Phishing_Detection.json` into n8n
-2. **Connect credentials** — Outlook OAuth2, OpenAI API key, Slack
-3. **Update Slack channel** — default is `#n8n-testing-space`. Change the channel ID in the Slack node to your production security channel
-4. **Review the GPT-4 prompt** — in `Analyse Email with GPT-4`, check the system prompt matches your risk tolerance
-5. **Test** — use `test-data.json` to verify the IF node routing before going live
-6. **Activate** — workflow polls Outlook every minute
-
----
-
-## Customisation
+## ⚙️ Customisation
 
 | What | Where | How |
 |------|-------|-----|
-| Poll frequency | Microsoft Outlook Trigger | Change interval (every minute / hourly / etc.) |
-| Risk threshold | High Risk? (IF node) | Add or remove HIGH/CRITICAL conditions |
+| Poll frequency | Microsoft Outlook Trigger | Change interval — every minute / 5 min / hourly |
+| Alert threshold | High Risk? (If node) | Add MEDIUM to the condition to lower the threshold |
 | Slack channel | Send Slack Security Alert | Update `channelId` |
-| AI model | Analyse Email with GPT-4 | Swap GPT-4 for another model |
+| AI model | Analyse Email with GPT-4 | Swap to GPT-4o or Claude if needed |
+| Risk prompt | Analyse Email with GPT-4 | Tune the system prompt to your organisation's profile |
 | Alert message format | Send Slack Security Alert | Edit the `text` field |
-| GPT-4 system prompt | Analyse Email with GPT-4 | Tune for your environment and risk appetite |
 
 ---
 
-## Known Limitations
+## 🛡️ Error Handling
 
-- **Poll-based trigger** — polls every minute, not true real-time. For instant response, replace with a Microsoft Graph webhook trigger
-- **Screenshot analysis not implemented** — screenshot services (Urlbox, Screenshotapi) were evaluated but added unreliable complexity with no measurable improvement in detection accuracy
-- **Prompt quality matters** — GPT-4 analysis is only as good as the system prompt. Review it periodically as phishing tactics evolve
+- Graph API call uses `onError: continueRegularOutput` — a header retrieval failure won't stop the workflow
+- No retry logic is currently configured — transient Graph API failures will be silently skipped until the next poll cycle
+- Add an Error Trigger node connected to Slack for workflow-level failure notification in production
 
 ---
 
-## Related Workflows
+## 🛠️ Technologies Used
 
-| Workflow | Relationship |
-|----------|-------------|
-| `Analyze & Sort Suspicious Email Contents with ChatGPT.json` | Similar pattern — sorts emails into categories rather than risk levels |
-| `Check Suspicious Links via Telegram with GPT-4.json` | Companion — checks suspicious URLs flagged in emails |
+| Tool | Version | Purpose |
+|------|---------|---------|
+| n8n | v1.121.3 | Workflow orchestration |
+| Microsoft Outlook | - | Email source |
+| Microsoft Graph API | v1.0 | Full email header retrieval |
+| OpenAI GPT-4 | Latest | Phishing risk classification |
+| Slack | API v2 | Security alert delivery |
+
+### Why These Tools?
+
+**Microsoft Graph API** — The Outlook trigger node alone doesn't return full headers. Graph API provides the raw `internetMessageHeaders` array needed for SPF/DKIM/DMARC analysis. One extra HTTP Request node, significant improvement in signal quality.
+
+**GPT-4** — Header analysis involves interpreting combinations of SPF pass/fail, DKIM signatures, DMARC alignment, IP reputation, and Return-Path mismatches. A rules engine would need dozens of conditions. GPT-4 handles this in a single prompt and explains its reasoning — useful for tuning.
+
+**HIGH/CRITICAL only** — Deliberate design. Tested against KnowBe4 simulations. FALSE POSITIVE RATE TARGET: zero. If a legitimate email is misclassified as HIGH, trust in the system breaks down. Alert only when certain.
+
+---
+
+## ⚠️ Known Limitations
+
+- **Poll-based, not real-time** — 1-minute polling means up to 60 seconds between email arrival and alert. For instant response, replace with a Microsoft Graph webhook trigger (requires webhook endpoint accessible from the internet).
+- **GPT-4 prompt needs periodic tuning** — phishing tactics evolve. Review the system prompt quarterly.
+- **No email screenshot capture** — investigated and deferred. Screenshot API services add cost and complexity with marginal detection improvement given header-only analysis already catches the key indicators.
+- **Microsoft 365 OAuth complexity** — Azure app registration with correct Graph API permissions is the most common setup failure. See `.env.example` for required permission scopes.
+
+---
+
+## 📫 Contact
+
+**Tony O'Connor**
+- GitHub: [@digitaloconnor](https://github.com/digitaloconnor)
+- n8n Instance: [automation.fioslabs.org](https://automation.fioslabs.org)
+
+---
+
+## 🔖 Tags
+
+`#n8n` `#automation` `#phishing` `#secops` `#email-security` `#microsoft-outlook` `#graph-api` `#openai` `#gpt4` `#slack` `#security-automation` `#threat-detection`
+
+---
+
+**⚡ Status**: Active | **🗂️ Category**: SecOps | **📅 Last Updated**: 2026-03-26
